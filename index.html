@@ -1,0 +1,190 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>AR Note App</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #noteInput {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: white;
+            padding: 10px;
+            z-index: 100;
+            border-radius: 8px;
+            box-shadow: 0px 2px 5px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="noteInput">
+        <label for="note">Note:</label>
+        <input type="text" id="note" placeholder="Enter your note">
+        <button id="placeNote">Place Note</button>
+    </div>
+    <script type="module">
+        import { WebXRButton } from './js/util/webxr-button.js';
+        import { Scene } from './js/render/scenes/scene.js';
+        import { Renderer, createWebGLContext } from './js/render/core/renderer.js';
+        import { Node } from './js/render/core/node.js';
+        import { vec3 } from './js/render/math/gl-matrix.js';
+
+        let xrButton = null;
+        let xrRefSpace = null;
+        let xrViewerSpace = null;
+        let xrHitTestSource = null;
+
+        let gl = null;
+        let renderer = null;
+        let scene = new Scene();
+        scene.enableStats(false);
+
+        let notes = [];
+        const MAX_NOTES = 30;
+
+        function initXR() {
+            xrButton = new WebXRButton({
+                onRequestSession: onRequestSession,
+                onEndSession: onEndSession,
+                textEnterXRTitle: 'START AR',
+                textXRNotFoundTitle: 'AR NOT FOUND',
+                textExitXRTitle: 'EXIT AR',
+            });
+            document.body.appendChild(xrButton.domElement);
+
+            if (navigator.xr) {
+                navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+                    xrButton.enabled = supported;
+                });
+            }
+        }
+
+        function onRequestSession() {
+            return navigator.xr
+                .requestSession('immersive-ar', { requiredFeatures: ['local', 'hit-test'] })
+                .then((session) => {
+                    xrButton.setSession(session);
+                    onSessionStarted(session);
+                });
+        }
+
+        function onSessionStarted(session) {
+            session.addEventListener('end', onSessionEnded);
+            session.addEventListener('select', onSelect);
+
+            if (!gl) {
+                gl = createWebGLContext({ xrCompatible: true });
+                renderer = new Renderer(gl);
+                scene.setRenderer(renderer);
+            }
+
+            session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+
+            session.requestReferenceSpace('viewer').then((refSpace) => {
+                xrViewerSpace = refSpace;
+                session.requestHitTestSource({ space: xrViewerSpace }).then((hitTestSource) => {
+                    xrHitTestSource = hitTestSource;
+                });
+            });
+
+            session.requestReferenceSpace('local').then((refSpace) => {
+                xrRefSpace = refSpace;
+                session.requestAnimationFrame(onXRFrame);
+            });
+        }
+
+        function onEndSession(session) {
+            notes.forEach(({ anchor }) => anchor.delete());
+            notes = [];
+            xrHitTestSource.cancel();
+            xrHitTestSource = null;
+            session.end();
+        }
+
+        function onSessionEnded(event) {
+            xrButton.setSession(null);
+        }
+
+        function onSelect(event) {
+            const noteContent = document.getElementById('note').value || 'Empty Note';
+            if (xrHitTestSource) {
+                xrHitTestSource.createAnchor().then((anchor) => {
+                    const note = createNoteNode(noteContent, anchor);
+                    scene.addNode(note);
+                    notes.push({ node: note, anchor });
+
+                    if (notes.length > MAX_NOTES) {
+                        const oldNote = notes.shift();
+                        scene.removeNode(oldNote.node);
+                        oldNote.anchor.delete();
+                    }
+
+                    saveNotes();
+                });
+            }
+        }
+
+        function createNoteNode(content, anchor) {
+            const noteNode = new Node();
+            noteNode.anchor = anchor;
+            noteNode.textContent = content;
+
+            // Replace with your text rendering logic
+            const textNode = document.createElement('div');
+            textNode.textContent = content;
+            textNode.style.color = 'white';
+            textNode.style.position = 'absolute';
+            noteNode.element = textNode;
+
+            return noteNode;
+        }
+
+        function saveNotes() {
+            localStorage.setItem(
+                'notes',
+                JSON.stringify(notes.map(({ node, anchor }) => ({ content: node.textContent })))
+            );
+        }
+
+        function loadNotes() {
+            const savedNotes = JSON.parse(localStorage.getItem('notes') || '[]');
+            savedNotes.forEach(({ content }) => {
+                const note = createNoteNode(content);
+                scene.addNode(note);
+            });
+        }
+
+        function onXRFrame(t, frame) {
+            const session = frame.session;
+            const pose = frame.getViewerPose(xrRefSpace);
+
+            if (xrHitTestSource && pose) {
+                const hitTestResults = frame.getHitTestResults(xrHitTestSource);
+                if (hitTestResults.length > 0) {
+                    const pose = hitTestResults[0].getPose(xrRefSpace);
+                    // Reticle logic here
+                }
+            }
+
+            scene.startFrame();
+            session.requestAnimationFrame(onXRFrame);
+            scene.drawXRFrame(frame, pose);
+            scene.endFrame();
+        }
+
+        initXR();
+        loadNotes();
+    </script>
+</body>
+
+</html>
